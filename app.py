@@ -10,31 +10,45 @@ from fastapi.responses import RedirectResponse
 # --- 1. CONFIGURATION ---
 app = FastAPI()
 
-# Only mount static if the folder exists (prevents Vercel errors)
 if os.path.exists("static"):
     app.mount("/static", StaticFiles(directory="static"), name="static")
 
 templates = Jinja2Templates(directory="templates")
 
-# Color Badges
+# Color Badges (Code -> Color Style)
 CATEGORY_COLORS = {
-    "ADM": "bg-slate-100 text-slate-700 border-slate-200",
-    "FIN": "bg-emerald-50 text-emerald-700 border-emerald-200",
-    "GUR": "bg-amber-50 text-amber-700 border-amber-200",
-    "ZON": "bg-indigo-50 text-indigo-700 border-indigo-200",
-    "EDU": "bg-sky-50 text-sky-700 border-sky-200",
-    "LAW": "bg-rose-50 text-rose-700 border-rose-200"
+    "ADM": "bg-slate-100 text-slate-700 border-slate-200",  # Administration
+    "FIN": "bg-emerald-50 text-emerald-700 border-emerald-200", # Finance
+    "GUR": "bg-amber-50 text-amber-700 border-amber-200",     # Guru Services
+    "ZON": "bg-indigo-50 text-indigo-700 border-indigo-200",   # Zonal
+    "EDU": "bg-sky-50 text-sky-700 border-sky-200",         # Education
+    "LAW": "bg-rose-50 text-rose-700 border-rose-200",       # Legal
+    "DEV": "bg-purple-50 text-purple-700 border-purple-200",   # Devotee Care / Development
+    "BBT": "bg-orange-50 text-orange-700 border-orange-200",   # Book Trust
+    "COM": "bg-blue-50 text-blue-700 border-blue-200",       # Communications
+    "PRE": "bg-pink-50 text-pink-700 border-pink-200"        # Preaching
 }
 
-# Full Names
+# FULL MAPPING: Code -> Full Name
+# This ensures that selecting "Education" matches "EDU" and vice versa.
 MINISTRY_NAMES = {
-    "ADM": "Administrative",
-    "FIN": "Finance",
+    "ADM": "Administration",
+    "FIN": "Finance & Accounting",
     "GUR": "Guru Services",
     "ZON": "Zonal Services",
     "EDU": "Education",
-    "LAW": "Legal & Justice"
+    "LAW": "Justice & Legal",
+    "DEV": "Devotee Care",
+    "BBT": "Book Distribution (BBT)",
+    "COM": "Communications",
+    "PRE": "Preaching & Outreach",
+    "TEM": "Temple Development",
+    "ISK": "ISKCON Property",
+    "MAN": "Management"
 }
+
+# Mapping: Full Name -> Code (Created dynamically)
+NAME_TO_CODE = {v: k for k, v in MINISTRY_NAMES.items()}
 
 # --- 2. DATA LOADING (JSON) ---
 RESOLUTIONS: List[Dict] = []
@@ -47,9 +61,8 @@ def clean_id_list(id_str):
     return [x.strip() for x in re.split(r'[,;]', str(id_str)) if x.strip()]
 
 def load_data():
-    global RESOLUTIONS, RESOLUTION_META, REVERSE_LINKS, NAV_TREE
+    global RESOLUTIONS, RESOLUTION_META, REVERSE_LINKS, NAV_TREE, NAME_TO_CODE
     
-    # Path to the JSON file
     json_path = os.path.join("data", "resolutions.json")
     
     if not os.path.exists(json_path):
@@ -60,7 +73,7 @@ def load_data():
         with open(json_path, 'r', encoding='utf-8') as f:
             RESOLUTIONS = json.load(f)
 
-        # 1. Build Metadata Map (Fast Lookup)
+        # 1. Build Metadata Map
         RESOLUTION_META = {r['Resolution_ID']: {"year": r['Year'], "date": r['Date_Passed']} for r in RESOLUTIONS}
         
         # 2. Build Links & Nav Tree
@@ -88,7 +101,6 @@ def load_data():
     except Exception as e:
         print(f"❌ Error loading JSON: {e}")
 
-# Load data on startup
 load_data()
 
 # --- 3. HELPER FUNCTIONS ---
@@ -119,24 +131,66 @@ async def archive(request: Request, q: Optional[str] = None, ministry: Optional[
     # Start with all data
     results = RESOLUTIONS
     
-    # Apply Filters
-    if ministry: results = [r for r in results if r['Section_Ministry'] == ministry]
+    # --- 1. SMART MINISTRY FILTER (Cross-Correct) ---
+    if ministry:
+        # Check if the user selected a "Full Name" (e.g., "Education")
+        target_code = NAME_TO_CODE.get(ministry)
+        
+        # Check if they selected a "Code" directly (e.g., "EDU")
+        target_name = MINISTRY_NAMES.get(ministry)
+
+        results = [
+            r for r in results 
+            if r['Section_Ministry'] == ministry  # Exact match
+            or (target_code and r['Chapter_Code'] == target_code) # Name matches Code (Education -> EDU)
+            or (target_name and r['Section_Ministry'] == target_name) # Code matches Name (EDU -> Education)
+        ]
+
+    # --- 2. OTHER FILTERS ---
     if category: results = [r for r in results if r['Category'] == category]
     if scope: results = [r for r in results if r['Scope'] == scope]
     if year and year.isdigit(): results = [r for r in results if r['Year'] == int(year)]
     
-    # Apply Search (Case insensitive)
+    # --- 3. SMART KEYWORD SEARCH ---
     if q:
-        q_lower = q.lower()
-        results = [
-            r for r in results 
-            if q_lower in r['Full_Text'].lower() 
-            or q_lower in r['Resolution_ID'].lower() 
-            or q_lower in r['Title'].lower()
-        ]
+        terms = [t.lower() for t in q.split() if t.strip()]
+        if terms:
+            filtered_results = []
+            for r in results:
+                id_txt = r['Resolution_ID'].lower()
+                title_txt = r['Title'].lower()
+                body_txt = r['Full_Text'].lower()
+                
+                all_found = True
+                for term in terms:
+                    # Boundary matching: start of word
+                    pattern = r'\b' + re.escape(term)
+                    found = (re.search(pattern, id_txt) or re.search(pattern, title_txt) or re.search(pattern, body_txt))
+                    if not found:
+                        all_found = False
+                        break
+                
+                if all_found:
+                    filtered_results.append(r)
+            results = filtered_results
 
-    # Dynamic Filter Options
-    unique_ministries = sorted(list(set(r['Section_Ministry'] for r in RESOLUTIONS)))
+    # --- 4. DYNAMIC DROPDOWNS (Smart List) ---
+    # We want to display nice names in the dropdown, not just raw codes.
+    raw_ministries = set(r['Section_Ministry'] for r in RESOLUTIONS)
+    
+    clean_ministry_list = set()
+    for m in raw_ministries:
+        # If 'm' is a code (e.g., "EDU"), show "Education"
+        if m in MINISTRY_NAMES:
+            clean_ministry_list.add(MINISTRY_NAMES[m])
+        # If 'm' is already a name (e.g., "Education"), keep it
+        elif m in NAME_TO_CODE:
+            clean_ministry_list.add(m)
+        else:
+            # Fallback for unknown ones
+            clean_ministry_list.add(m)
+            
+    unique_ministries = sorted(list(clean_ministry_list))
     unique_categories = sorted(list(set(r['Category'] for r in RESOLUTIONS)))
     unique_scopes = sorted(list(set(r['Scope'] for r in RESOLUTIONS)))
 
