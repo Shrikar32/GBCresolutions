@@ -1,4 +1,4 @@
-import pandas as pd
+import json
 import os
 import re
 from typing import Optional, List, Dict
@@ -7,17 +7,16 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import RedirectResponse
 
-# --- 1. INITIALIZATION ---
+# --- 1. CONFIGURATION ---
 app = FastAPI()
 
-if not os.path.exists("static"):
-    os.makedirs("static")
+# Only mount static if the folder exists (prevents Vercel errors)
+if os.path.exists("static"):
+    app.mount("/static", StaticFiles(directory="static"), name="static")
 
-app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
-# --- 2. CONFIGURATION ---
-# Colors for the badges
+# Color Badges
 CATEGORY_COLORS = {
     "ADM": "bg-slate-100 text-slate-700 border-slate-200",
     "FIN": "bg-emerald-50 text-emerald-700 border-emerald-200",
@@ -27,7 +26,7 @@ CATEGORY_COLORS = {
     "LAW": "bg-rose-50 text-rose-700 border-rose-200"
 }
 
-# FULL NAME DEFINITIONS
+# Full Names
 MINISTRY_NAMES = {
     "ADM": "Administrative",
     "FIN": "Finance",
@@ -37,128 +36,106 @@ MINISTRY_NAMES = {
     "LAW": "Legal & Justice"
 }
 
-MINISTRY_CODE_MAP = ["ADM", "FIN", "GUR", "ZON", "EDU", "LAW"]
-
-# Global Data Stores
+# --- 2. DATA LOADING (JSON) ---
 RESOLUTIONS: List[Dict] = []
 RESOLUTION_META: Dict[str, Dict] = {}
 REVERSE_LINKS: Dict[str, List[Dict]] = {}
 NAV_TREE: Dict[str, List[int]] = {}
 
-# --- 3. HELPERS ---
 def clean_id_list(id_str):
-    if not id_str or str(id_str).strip().lower() in ['nan', 'none', '']: return []
+    if not id_str: return []
     return [x.strip() for x in re.split(r'[,;]', str(id_str)) if x.strip()]
 
-def resolve_links(id_list_str, rel_type):
-    links = []
-    for rid in clean_id_list(id_list_str):
-        rid_clean = str(rid).strip()
-        meta = RESOLUTION_META.get(rid_clean)
-        if meta:
-            links.append({"id": rid_clean, "type": rel_type, "year": meta.get('year', 'N/A'), "date": meta.get('date', 'N/A')})
-        else:
-            links.append({"id": rid_clean, "type": rel_type, "year": "Ref", "date": "External"})
-    return links
-
-def get_era(year):
-    try:
-        y = int(year)
-        return f"{int(y//10 * 10)}s" if y > 0 else "Unknown"
-    except: return "Unknown"
-
-# --- 4. DATA ENGINE (Pandas/Excel Version) ---
 def load_data():
     global RESOLUTIONS, RESOLUTION_META, REVERSE_LINKS, NAV_TREE
-    RESOLUTIONS = []
-    RESOLUTION_META = {}
-    REVERSE_LINKS = {}
-    NAV_TREE = {}
     
-    data_folder = "data"
-    if not os.path.exists(data_folder): return
-
-    files = [f for f in os.listdir(data_folder) if f.endswith('.xlsx')]
-    if not files: return
-
-    filepath = os.path.join(data_folder, files[0])
+    # Path to the JSON file
+    json_path = os.path.join("data", "resolutions.json")
     
+    if not os.path.exists(json_path):
+        print("WARNING: resolutions.json not found.")
+        return
+
     try:
-        df = pd.read_excel(filepath)
-        df = df.fillna('')  
+        with open(json_path, 'r', encoding='utf-8') as f:
+            RESOLUTIONS = json.load(f)
 
-        for _, row in df.iterrows():
-            res = {}
-            res['Resolution_ID'] = str(row.get('Resolution_ID', "MISSING-ID")).strip()
-            res['Full_Text'] = str(row.get('Full_Text', "")).strip()
-            res['Title'] = str(row.get('Title', "Untitled")).strip()
-            
-            try: res['Year'] = int(float(row.get('Year', 0)))
-            except: res['Year'] = 0
-            
-            res['Is_Active'] = str(row.get('Status', 'active')).lower() == 'active'
-            res['Shelf'] = get_era(res['Year'])
-            res['Section_Ministry'] = str(row.get('Section_Ministry', 'Uncategorized')).strip() or 'Uncategorized'
-            res['Category'] = str(row.get('Category', 'General')).strip() or 'General'
-            res['Scope'] = str(row.get('Scope', 'Global')).strip() or 'Global'
-            res['Date_Passed'] = str(row.get('Date_Passed', res['Year'])).strip()
-            
-            res['Amends_IDs'] = str(row.get('Amends_IDs', ''))
-            res['Repeals_IDs'] = str(row.get('Repeals_IDs', ''))
-
-            # Assign Code
-            code = res['Section_Ministry'].upper()
-            res['Chapter_Code'] = code if code in MINISTRY_CODE_MAP else "ADM"
-
-            RESOLUTIONS.append(res)
-            RESOLUTION_META[res['Resolution_ID']] = {"year": res['Year'], "date": res['Date_Passed'], "title": res['Title']}
-            
-            for target in clean_id_list(res['Amends_IDs']):
-                REVERSE_LINKS.setdefault(str(target).strip(), []).append(
-                    {"type": "AMENDED BY", "source_id": res['Resolution_ID'], "date": res['Date_Passed']}
-                )
-
-        RESOLUTIONS.sort(key=lambda x: (-x['Year'], x['Resolution_ID']))
+        # 1. Build Metadata Map (Fast Lookup)
+        RESOLUTION_META = {r['Resolution_ID']: {"year": r['Year'], "date": r['Date_Passed']} for r in RESOLUTIONS}
         
-        eras = sorted(list(set(r['Shelf'] for r in RESOLUTIONS if r['Shelf'] != "Unknown")), reverse=True)
-        for era in eras:
+        # 2. Build Links & Nav Tree
+        unique_shelves = set()
+        
+        for res in RESOLUTIONS:
+            # Reverse Links
+            if res.get('Amends_IDs'):
+                for target in clean_id_list(res['Amends_IDs']):
+                    REVERSE_LINKS.setdefault(target, []).append(
+                        {"type": "AMENDED BY", "source_id": res['Resolution_ID'], "date": res['Date_Passed']}
+                    )
+            
+            if res['Shelf'] != "Unknown":
+                unique_shelves.add(res['Shelf'])
+
+        # 3. Build Navigation Tree
+        sorted_eras = sorted(list(unique_shelves), reverse=True)
+        for era in sorted_eras:
             years = sorted(list(set(r['Year'] for r in RESOLUTIONS if r['Shelf'] == era)), reverse=True)
             NAV_TREE[era] = years
 
-    except Exception as e:
-        print(f"❌ Load Error: {e}")
+        print(f"✅ Loaded {len(RESOLUTIONS)} records.")
 
+    except Exception as e:
+        print(f"❌ Error loading JSON: {e}")
+
+# Load data on startup
 load_data()
 
-# --- 5. ROUTES ---
+# --- 3. HELPER FUNCTIONS ---
+def resolve_links(id_list_str, rel_type):
+    links = []
+    for rid in clean_id_list(id_list_str):
+        clean_id = str(rid).strip()
+        meta = RESOLUTION_META.get(clean_id)
+        if meta:
+            links.append({"id": clean_id, "type": rel_type, "year": meta.get('year', 'N/A')})
+        else:
+            links.append({"id": clean_id, "type": rel_type, "year": "Ref"})
+    return links
 
+# --- 4. ROUTES ---
 @app.get("/")
 async def home(request: Request):
     if not RESOLUTIONS: load_data()
-    min_year = min((r['Year'] for r in RESOLUTIONS), default=0) if RESOLUTIONS else 0
-    max_year = max((r['Year'] for r in RESOLUTIONS), default=0) if RESOLUTIONS else 0
-    
     stats = {
         "count": len(RESOLUTIONS),
-        "min_year": min_year,
-        "max_year": max_year,
+        "min_year": min((r['Year'] for r in RESOLUTIONS), default=0) if RESOLUTIONS else 0,
+        "max_year": max((r['Year'] for r in RESOLUTIONS), default=0) if RESOLUTIONS else 0,
     }
     return templates.TemplateResponse("home.html", {"request": request, "stats": stats})
 
 @app.get("/archive")
 async def archive(request: Request, q: Optional[str] = None, ministry: Optional[str] = None, category: Optional[str] = None, scope: Optional[str] = None, year: Optional[str] = None):
-    if not RESOLUTIONS: load_data()
-    
+    # Start with all data
     results = RESOLUTIONS
+    
+    # Apply Filters
     if ministry: results = [r for r in results if r['Section_Ministry'] == ministry]
     if category: results = [r for r in results if r['Category'] == category]
     if scope: results = [r for r in results if r['Scope'] == scope]
     if year and year.isdigit(): results = [r for r in results if r['Year'] == int(year)]
     
+    # Apply Search (Case insensitive)
     if q:
         q_lower = q.lower()
-        results = [r for r in results if q_lower in r['Full_Text'].lower() or q_lower in r['Resolution_ID'].lower() or q_lower in r['Title'].lower()]
+        results = [
+            r for r in results 
+            if q_lower in r['Full_Text'].lower() 
+            or q_lower in r['Resolution_ID'].lower() 
+            or q_lower in r['Title'].lower()
+        ]
 
+    # Dynamic Filter Options
     unique_ministries = sorted(list(set(r['Section_Ministry'] for r in RESOLUTIONS)))
     unique_categories = sorted(list(set(r['Category'] for r in RESOLUTIONS)))
     unique_scopes = sorted(list(set(r['Scope'] for r in RESOLUTIONS)))
@@ -168,7 +145,7 @@ async def archive(request: Request, q: Optional[str] = None, ministry: Optional[
         "ministries": unique_ministries, "categories": unique_categories, "scopes": unique_scopes,
         "selected_ministry": ministry, "selected_category": category, "selected_scope": scope, "selected_year": year,
         "cat_colors": CATEGORY_COLORS,
-        "min_names": MINISTRY_NAMES  # Passing names here
+        "min_names": MINISTRY_NAMES
     })
 
 @app.get("/page/{res_id}")
@@ -185,5 +162,5 @@ async def page_view(request: Request, res_id: str):
     return templates.TemplateResponse("resolution.html", {
         "request": request, "res": res, "trace": trace, 
         "cat_colors": CATEGORY_COLORS, "nav": NAV_TREE, 
-        "min_names": MINISTRY_NAMES # Passing names here
+        "min_names": MINISTRY_NAMES
     })
