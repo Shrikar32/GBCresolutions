@@ -15,40 +15,26 @@ if os.path.exists("static"):
 
 templates = Jinja2Templates(directory="templates")
 
-# Color Badges (Code -> Color Style)
+# Color Styles (Map specific names or codes to colors)
 CATEGORY_COLORS = {
-    "ADM": "bg-slate-100 text-slate-700 border-slate-200",  # Administration
-    "FIN": "bg-emerald-50 text-emerald-700 border-emerald-200", # Finance
-    "GUR": "bg-amber-50 text-amber-700 border-amber-200",     # Guru Services
-    "ZON": "bg-indigo-50 text-indigo-700 border-indigo-200",   # Zonal
-    "EDU": "bg-sky-50 text-sky-700 border-sky-200",         # Education
-    "LAW": "bg-rose-50 text-rose-700 border-rose-200",       # Legal
-    "DEV": "bg-purple-50 text-purple-700 border-purple-200",   # Devotee Care / Development
-    "BBT": "bg-orange-50 text-orange-700 border-orange-200",   # Book Trust
-    "COM": "bg-blue-50 text-blue-700 border-blue-200",       # Communications
-    "PRE": "bg-pink-50 text-pink-700 border-pink-200"        # Preaching
+    "ADM": "bg-slate-100 text-slate-700 border-slate-200",
+    "FIN": "bg-emerald-50 text-emerald-700 border-emerald-200",
+    "Finance and Accounting": "bg-emerald-50 text-emerald-700 border-emerald-200",
+    "GUR": "bg-amber-50 text-amber-700 border-amber-200",
+    "ZON": "bg-indigo-50 text-indigo-700 border-indigo-200",
+    "EDU": "bg-sky-50 text-sky-700 border-sky-200",
+    "Education Committee": "bg-sky-50 text-sky-700 border-sky-200",
+    "LAW": "bg-rose-50 text-rose-700 border-rose-200",
+    "DEV": "bg-purple-50 text-purple-700 border-purple-200",
+    "BBT": "bg-orange-50 text-orange-700 border-orange-200",
+    "Bhaktivedanta Book Trust": "bg-orange-50 text-orange-700 border-orange-200",
+    "COM": "bg-blue-50 text-blue-700 border-blue-200",
+    "PRE": "bg-pink-50 text-pink-700 border-pink-200",
+    "GBC": "bg-gray-100 text-gray-800 border-gray-300",
+    "Deity Worship": "bg-yellow-50 text-yellow-700 border-yellow-200",
+    "Child Protection Office": "bg-red-50 text-red-700 border-red-200",
+    "Grhasta Ministry": "bg-teal-50 text-teal-700 border-teal-200"
 }
-
-# FULL MAPPING: Code -> Full Name
-# This ensures that selecting "Education" matches "EDU" and vice versa.
-MINISTRY_NAMES = {
-    "ADM": "Administration",
-    "FIN": "Finance & Accounting",
-    "GUR": "Guru Services",
-    "ZON": "Zonal Services",
-    "EDU": "Education",
-    "LAW": "Justice & Legal",
-    "DEV": "Devotee Care",
-    "BBT": "Book Distribution (BBT)",
-    "COM": "Communications",
-    "PRE": "Preaching & Outreach",
-    "TEM": "Temple Development",
-    "ISK": "ISKCON Property",
-    "MAN": "Management"
-}
-
-# Mapping: Full Name -> Code (Created dynamically)
-NAME_TO_CODE = {v: k for k, v in MINISTRY_NAMES.items()}
 
 # --- 2. DATA LOADING (JSON) ---
 RESOLUTIONS: List[Dict] = []
@@ -61,7 +47,7 @@ def clean_id_list(id_str):
     return [x.strip() for x in re.split(r'[,;]', str(id_str)) if x.strip()]
 
 def load_data():
-    global RESOLUTIONS, RESOLUTION_META, REVERSE_LINKS, NAV_TREE, NAME_TO_CODE
+    global RESOLUTIONS, RESOLUTION_META, REVERSE_LINKS, NAV_TREE
     
     json_path = os.path.join("data", "resolutions.json")
     
@@ -131,27 +117,16 @@ async def archive(request: Request, q: Optional[str] = None, ministry: Optional[
     # Start with all data
     results = RESOLUTIONS
     
-    # --- 1. SMART MINISTRY FILTER (Cross-Correct) ---
+    # --- 1. FILTERS ---
     if ministry:
-        # Check if the user selected a "Full Name" (e.g., "Education")
-        target_code = NAME_TO_CODE.get(ministry)
-        
-        # Check if they selected a "Code" directly (e.g., "EDU")
-        target_name = MINISTRY_NAMES.get(ministry)
+        # Exact match (Since we cleaned data in convert_data.py, names are consistent now)
+        results = [r for r in results if r['Section_Ministry'] == ministry]
 
-        results = [
-            r for r in results 
-            if r['Section_Ministry'] == ministry  # Exact match
-            or (target_code and r['Chapter_Code'] == target_code) # Name matches Code (Education -> EDU)
-            or (target_name and r['Section_Ministry'] == target_name) # Code matches Name (EDU -> Education)
-        ]
-
-    # --- 2. OTHER FILTERS ---
     if category: results = [r for r in results if r['Category'] == category]
     if scope: results = [r for r in results if r['Scope'] == scope]
     if year and year.isdigit(): results = [r for r in results if r['Year'] == int(year)]
     
-    # --- 3. SMART KEYWORD SEARCH ---
+    # --- 2. SMART KEYWORD SEARCH ---
     if q:
         terms = [t.lower() for t in q.split() if t.strip()]
         if terms:
@@ -163,7 +138,6 @@ async def archive(request: Request, q: Optional[str] = None, ministry: Optional[
                 
                 all_found = True
                 for term in terms:
-                    # Boundary matching: start of word
                     pattern = r'\b' + re.escape(term)
                     found = (re.search(pattern, id_txt) or re.search(pattern, title_txt) or re.search(pattern, body_txt))
                     if not found:
@@ -174,23 +148,8 @@ async def archive(request: Request, q: Optional[str] = None, ministry: Optional[
                     filtered_results.append(r)
             results = filtered_results
 
-    # --- 4. DYNAMIC DROPDOWNS (Smart List) ---
-    # We want to display nice names in the dropdown, not just raw codes.
-    raw_ministries = set(r['Section_Ministry'] for r in RESOLUTIONS)
-    
-    clean_ministry_list = set()
-    for m in raw_ministries:
-        # If 'm' is a code (e.g., "EDU"), show "Education"
-        if m in MINISTRY_NAMES:
-            clean_ministry_list.add(MINISTRY_NAMES[m])
-        # If 'm' is already a name (e.g., "Education"), keep it
-        elif m in NAME_TO_CODE:
-            clean_ministry_list.add(m)
-        else:
-            # Fallback for unknown ones
-            clean_ministry_list.add(m)
-            
-    unique_ministries = sorted(list(clean_ministry_list))
+    # --- 3. DYNAMIC DROPDOWNS ---
+    unique_ministries = sorted(list(set(r['Section_Ministry'] for r in RESOLUTIONS)))
     unique_categories = sorted(list(set(r['Category'] for r in RESOLUTIONS)))
     unique_scopes = sorted(list(set(r['Scope'] for r in RESOLUTIONS)))
 
@@ -198,8 +157,7 @@ async def archive(request: Request, q: Optional[str] = None, ministry: Optional[
         "request": request, "results": results, "query": q, "nav": NAV_TREE,
         "ministries": unique_ministries, "categories": unique_categories, "scopes": unique_scopes,
         "selected_ministry": ministry, "selected_category": category, "selected_scope": scope, "selected_year": year,
-        "cat_colors": CATEGORY_COLORS,
-        "min_names": MINISTRY_NAMES
+        "cat_colors": CATEGORY_COLORS
     })
 
 @app.get("/page/{res_id}")
@@ -215,6 +173,5 @@ async def page_view(request: Request, res_id: str):
     }
     return templates.TemplateResponse("resolution.html", {
         "request": request, "res": res, "trace": trace, 
-        "cat_colors": CATEGORY_COLORS, "nav": NAV_TREE, 
-        "min_names": MINISTRY_NAMES
+        "cat_colors": CATEGORY_COLORS, "nav": NAV_TREE
     })
