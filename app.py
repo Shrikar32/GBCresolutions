@@ -7,7 +7,6 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import RedirectResponse
 
-# --- 1. CONFIGURATION ---
 app = FastAPI()
 
 if os.path.exists("static"):
@@ -15,28 +14,37 @@ if os.path.exists("static"):
 
 templates = Jinja2Templates(directory="templates")
 
-# Color Styles (Map specific names or codes to colors)
+# COLOR MAPPING FOR THE NEW MERGED CATEGORIES
 CATEGORY_COLORS = {
-    "ADM": "bg-slate-100 text-slate-700 border-slate-200",
-    "FIN": "bg-emerald-50 text-emerald-700 border-emerald-200",
-    "Finance and Accounting": "bg-emerald-50 text-emerald-700 border-emerald-200",
-    "GUR": "bg-amber-50 text-amber-700 border-amber-200",
-    "ZON": "bg-indigo-50 text-indigo-700 border-indigo-200",
-    "EDU": "bg-sky-50 text-sky-700 border-sky-200",
-    "Education Committee": "bg-sky-50 text-sky-700 border-sky-200",
-    "LAW": "bg-rose-50 text-rose-700 border-rose-200",
-    "DEV": "bg-purple-50 text-purple-700 border-purple-200",
-    "BBT": "bg-orange-50 text-orange-700 border-orange-200",
+    "Administration": "bg-slate-100 text-slate-700 border-slate-200",
+    "GBC Body": "bg-slate-100 text-slate-700 border-slate-200",
+    
+    "Finance & Accounting": "bg-emerald-50 text-emerald-700 border-emerald-200",
+    
+    "Education": "bg-sky-50 text-sky-700 border-sky-200",
+    
+    "Justice & Legal": "bg-rose-50 text-rose-700 border-rose-200",
+    
     "Bhaktivedanta Book Trust": "bg-orange-50 text-orange-700 border-orange-200",
-    "COM": "bg-blue-50 text-blue-700 border-blue-200",
-    "PRE": "bg-pink-50 text-pink-700 border-pink-200",
-    "GBC": "bg-gray-100 text-gray-800 border-gray-300",
+    
+    "Guru Services": "bg-amber-50 text-amber-700 border-amber-200",
+    
     "Deity Worship": "bg-yellow-50 text-yellow-700 border-yellow-200",
+    
     "Child Protection Office": "bg-red-50 text-red-700 border-red-200",
-    "Grhasta Ministry": "bg-teal-50 text-teal-700 border-teal-200"
+    
+    "Preaching & Sannyasa": "bg-pink-50 text-pink-700 border-pink-200",
+    
+    "Communications": "bg-blue-50 text-blue-700 border-blue-200",
+    
+    "Community & Social": "bg-teal-50 text-teal-700 border-teal-200",
+    
+    "Zonal Services": "bg-indigo-50 text-indigo-700 border-indigo-200",
+    
+    "Uncategorized": "bg-gray-50 text-gray-500 border-gray-200"
 }
 
-# --- 2. DATA LOADING (JSON) ---
+# DATA LOADING
 RESOLUTIONS: List[Dict] = []
 RESOLUTION_META: Dict[str, Dict] = {}
 REVERSE_LINKS: Dict[str, List[Dict]] = {}
@@ -48,60 +56,42 @@ def clean_id_list(id_str):
 
 def load_data():
     global RESOLUTIONS, RESOLUTION_META, REVERSE_LINKS, NAV_TREE
-    
     json_path = os.path.join("data", "resolutions.json")
-    
-    if not os.path.exists(json_path):
-        print("WARNING: resolutions.json not found.")
-        return
+    if not os.path.exists(json_path): return
 
     try:
         with open(json_path, 'r', encoding='utf-8') as f:
             RESOLUTIONS = json.load(f)
 
-        # 1. Build Metadata Map
         RESOLUTION_META = {r['Resolution_ID']: {"year": r['Year'], "date": r['Date_Passed']} for r in RESOLUTIONS}
         
-        # 2. Build Links & Nav Tree
         unique_shelves = set()
-        
         for res in RESOLUTIONS:
-            # Reverse Links
             if res.get('Amends_IDs'):
                 for target in clean_id_list(res['Amends_IDs']):
                     REVERSE_LINKS.setdefault(target, []).append(
                         {"type": "AMENDED BY", "source_id": res['Resolution_ID'], "date": res['Date_Passed']}
                     )
-            
-            if res['Shelf'] != "Unknown":
-                unique_shelves.add(res['Shelf'])
+            if res['Shelf'] != "Unknown": unique_shelves.add(res['Shelf'])
 
-        # 3. Build Navigation Tree
         sorted_eras = sorted(list(unique_shelves), reverse=True)
         for era in sorted_eras:
             years = sorted(list(set(r['Year'] for r in RESOLUTIONS if r['Shelf'] == era)), reverse=True)
             NAV_TREE[era] = years
 
-        print(f"✅ Loaded {len(RESOLUTIONS)} records.")
-
-    except Exception as e:
-        print(f"❌ Error loading JSON: {e}")
+    except Exception as e: print(f"❌ Error: {e}")
 
 load_data()
 
-# --- 3. HELPER FUNCTIONS ---
 def resolve_links(id_list_str, rel_type):
     links = []
     for rid in clean_id_list(id_list_str):
         clean_id = str(rid).strip()
         meta = RESOLUTION_META.get(clean_id)
-        if meta:
-            links.append({"id": clean_id, "type": rel_type, "year": meta.get('year', 'N/A')})
-        else:
-            links.append({"id": clean_id, "type": rel_type, "year": "Ref"})
+        if meta: links.append({"id": clean_id, "type": rel_type, "year": meta.get('year', 'N/A')})
+        else: links.append({"id": clean_id, "type": rel_type, "year": "Ref"})
     return links
 
-# --- 4. ROUTES ---
 @app.get("/")
 async def home(request: Request):
     if not RESOLUTIONS: load_data()
@@ -114,19 +104,13 @@ async def home(request: Request):
 
 @app.get("/archive")
 async def archive(request: Request, q: Optional[str] = None, ministry: Optional[str] = None, category: Optional[str] = None, scope: Optional[str] = None, year: Optional[str] = None):
-    # Start with all data
     results = RESOLUTIONS
     
-    # --- 1. FILTERS ---
-    if ministry:
-        # Exact match (Since we cleaned data in convert_data.py, names are consistent now)
-        results = [r for r in results if r['Section_Ministry'] == ministry]
-
+    if ministry: results = [r for r in results if r['Section_Ministry'] == ministry]
     if category: results = [r for r in results if r['Category'] == category]
     if scope: results = [r for r in results if r['Scope'] == scope]
     if year and year.isdigit(): results = [r for r in results if r['Year'] == int(year)]
     
-    # --- 2. SMART KEYWORD SEARCH ---
     if q:
         terms = [t.lower() for t in q.split() if t.strip()]
         if terms:
@@ -135,7 +119,6 @@ async def archive(request: Request, q: Optional[str] = None, ministry: Optional[
                 id_txt = r['Resolution_ID'].lower()
                 title_txt = r['Title'].lower()
                 body_txt = r['Full_Text'].lower()
-                
                 all_found = True
                 for term in terms:
                     pattern = r'\b' + re.escape(term)
@@ -143,12 +126,9 @@ async def archive(request: Request, q: Optional[str] = None, ministry: Optional[
                     if not found:
                         all_found = False
                         break
-                
-                if all_found:
-                    filtered_results.append(r)
+                if all_found: filtered_results.append(r)
             results = filtered_results
 
-    # --- 3. DYNAMIC DROPDOWNS ---
     unique_ministries = sorted(list(set(r['Section_Ministry'] for r in RESOLUTIONS)))
     unique_categories = sorted(list(set(r['Category'] for r in RESOLUTIONS)))
     unique_scopes = sorted(list(set(r['Scope'] for r in RESOLUTIONS)))
@@ -164,9 +144,7 @@ async def archive(request: Request, q: Optional[str] = None, ministry: Optional[
 async def page_view(request: Request, res_id: str):
     res_id_clean = str(res_id).strip()
     res = next((r for r in RESOLUTIONS if r['Resolution_ID'] == res_id_clean), None)
-    
     if not res: return RedirectResponse("/archive")
-    
     trace = {
         "forward": resolve_links(res.get('Amends_IDs'), "AMENDS") + resolve_links(res.get('Repeals_IDs'), "REPEALS"),
         "backward": REVERSE_LINKS.get(res_id_clean, [])

@@ -3,38 +3,23 @@ import json
 import os
 import re
 
-# CONFIG
-# This maps the *Target Name* to the list of *Source Names* to merge.
-TOPIC_MERGES = {
-    "Bhaktivedanta Book Trust": [
-        "BBT/GBC", "BBT-GBC Relations Committee", "Bhaktivedanta Institute", 
-        "Bhaktivedanta Research Center", "Book Distribution (BBT)", 
-        "Book Distribution Ministry", "BBT"
-    ],
-    "Child Protection Office": [
-        "CPO", "CPT/GBC", "Child Protection Office", "Child Protection Task Force"
-    ],
-    "Deity Worship": [
-        "Deity Worship", "Deity Worship Committee", "Deity Worship Ministry"
-    ],
-    "Divisional Council": [
-        "Divisional Council", "Divisional Councils"
-    ],
-    "Education Committee": [
-        "Education", "Education Committee"
-    ],
-    "Finance and Accounting": [
-        "Finance", "Finance & Accounting"
-    ],
-    "GBC": [
-        "GBC", "GBC/ Guru Services", "GBC/Law", "GBC/ Mayapur", "GBC/SAC", 
-        "GBC Deputies", "GBC Education Committee", "GBC Executive Committee", 
-        "GBC Executive Office", "GBC Finance", "GBC Organizational Development Committee", 
-        "GBC Preaching Subcommittee", "GBC Sannyasa Sub-committee", "GBC Secretariat"
-    ],
-    "Grhasta Ministry": [
-        "Grhasta Ministry", "Grhasta and Community Development Ministry"
-    ]
+# CONFIG: KEYWORD MATCHING
+# The script checks these in order. If a keyword matches, it assigns that Category.
+# Order matters! (e.g., Check "Education" before "GBC" so "GBC Education" becomes "Education")
+KEYWORD_MAP = {
+    "Child Protection Office": ["child", "cpo", "cpt", "abuse"],
+    "Bhaktivedanta Book Trust": ["bbt", "book", "publish", "trust"],
+    "Education": ["educ", "school", "academ", "institut", "training", "research", "shastric"],
+    "Justice & Legal": ["law", "legal", "justice", "dispute", "constitution", "property", "title"],
+    "Finance & Accounting": ["financ", "account", "audit", "budget", "treasur"],
+    "Deity Worship": ["deity", "worship", "arcana", "puja"],
+    "Guru Services": ["guru", "disciple", "initiation"],
+    "Preaching & Sannyasa": ["preach", "sannyas", "congregation", "outreach", "harinam", "book dist"],
+    "Community & Social": ["grhasta", "grihastha", "women", "vaishnavi", "cow", "farm", "youth", "social"],
+    "Communications": ["communic", "public relation", "media"],
+    "Zonal Services": ["zonal", "regional", "divisional", "council"],
+    "Administration": ["admin", "exec", "secretar", "manag", "ministr", "committee", "office"],
+    "GBC Body": ["gbc", "resolution", "meeting"]  # Catch-all for remaining GBC items
 }
 
 def get_era(year):
@@ -46,6 +31,22 @@ def get_era(year):
 def clean_str(val):
     return str(val).strip() if val is not None else ""
 
+def normalize_ministry(raw_name):
+    """Scans the raw name for keywords and returns the Standard Category."""
+    if not raw_name: return "Uncategorized"
+    
+    raw_lower = raw_name.lower()
+    
+    # 1. Check against our Keyword Map
+    for category, keywords in KEYWORD_MAP.items():
+        for k in keywords:
+            # Check if keyword exists as a distinct word or start of word
+            if k in raw_lower:
+                return category
+    
+    # 2. If no keyword matched, return original (capitalized nicely)
+    return raw_name
+
 def run_conversion():
     data_folder = "data"
     files = [f for f in os.listdir(data_folder) if f.endswith('.xlsx') and not f.startswith('~')]
@@ -56,9 +57,13 @@ def run_conversion():
     filepath = os.path.join(data_folder, files[0])
     print(f"📂 Reading: {filepath}...")
     
-    df = pd.read_excel(filepath)
-    df = df.fillna('')
+    try:
+        df = pd.read_excel(filepath)
+    except PermissionError:
+        print("❌ ERROR: Excel file is OPEN. Please close it and try again.")
+        return
 
+    df = df.fillna('')
     optimized_data = []
 
     for _, row in df.iterrows():
@@ -74,32 +79,22 @@ def run_conversion():
         res['Is_Active'] = str(row.get('Status', 'active')).lower() == 'active'
         res['Shelf'] = get_era(res['Year'])
         
-        # --- 1. MERGE TOPICS (MINISTRIES) ---
-        raw_ministry = clean_str(row.get('Section_Ministry', 'Uncategorized')) or 'Uncategorized'
-        
-        # Check if this ministry exists in any of our merge lists
-        final_ministry = raw_ministry # Default to original
-        for target, sources in TOPIC_MERGES.items():
-            # Case-insensitive check
-            if raw_ministry.lower() in [s.lower() for s in sources]:
-                final_ministry = target
-                break
-        
-        res['Section_Ministry'] = final_ministry
-        # ------------------------------------
+        # --- SMART MERGE LOGIC ---
+        raw_ministry = clean_str(row.get('Section_Ministry', 'Uncategorized'))
+        res['Section_Ministry'] = normalize_ministry(raw_ministry)
+        # -------------------------
 
-        # --- 2. MERGE CATEGORIES (Previous Request) ---
-        raw_cat = clean_str(row.get('Category', 'General')) or 'General'
-        if raw_cat == "Administrative order": res['Category'] = "Administrative Order"
-        elif raw_cat == "Governing law": res['Category'] = "Governing Law"
+        # Category Cleanup (Administrative/Governing)
+        raw_cat = clean_str(row.get('Category', 'General'))
+        if "admin" in raw_cat.lower(): res['Category'] = "Administrative Order"
+        elif "govern" in raw_cat.lower(): res['Category'] = "Governing Law"
         else: res['Category'] = raw_cat
-        # ----------------------------------------------
 
         res['Scope'] = clean_str(row.get('Scope', 'Global')) or 'Global'
         res['Amends_IDs'] = clean_str(row.get('Amends_IDs', ''))
         res['Repeals_IDs'] = clean_str(row.get('Repeals_IDs', ''))
 
-        # Generate simple code (First 3 letters uppercase) for internal logic
+        # Generate simplified Code for colors (First 3 chars of merged name)
         res['Chapter_Code'] = res['Section_Ministry'][:3].upper()
 
         optimized_data.append(res)
@@ -112,7 +107,7 @@ def run_conversion():
     with open(output_path, 'w', encoding='utf-8') as f:
         json.dump(optimized_data, f, ensure_ascii=False) 
     
-    print(f"✅ SUCCESS! Converted {len(optimized_data)} records to {output_path}")
+    print(f"✅ SUCCESS! Cleaned & Merged {len(optimized_data)} records.")
 
 if __name__ == "__main__":
     run_conversion()
